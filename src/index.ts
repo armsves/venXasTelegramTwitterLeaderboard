@@ -3,6 +3,8 @@ import TelegramBot from 'node-telegram-bot-api'
 import { Agent } from '@openserv-labs/sdk'
 import axios from 'axios'
 import { z } from 'zod'
+import { supabase } from './supabaseClient';
+import { saveScoredTweet, ScoredTweet } from './saveScoredTweet'
 
 // Load environment variables
 dotenv.config()
@@ -119,6 +121,46 @@ Example: /leaderboard OpenServ\
               const username = userDetails.output.data.username;
               const followersCount = userDetails.output.data.public_metrics?.followers_count || 0;
               const profileLink = `https://twitter.com/${username}`;
+
+
+              const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
+
+              const parsedTweet = parseTweetBlock(tweetBlock);
+              const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
+              //save the tweet to the database
+              const {
+                score,
+                impact_score,
+                freshness_multiplier,
+                consistency_multiplier,
+                decay_factor
+              } = scoreTweetFromParsedData(parsedTweet, index, true); // true = active last week (ajústalo)
+              
+              await saveScoredTweet({
+                id_tweet: tweet.id,
+                user_id: tweet.author_id,
+                username,
+                text: tweet.text,
+                published_at: tweet.created_at,
+                likes: tweet.public_metrics.like_count,
+                retweets: tweet.public_metrics.retweet_count,
+                replies: tweet.public_metrics.reply_count,
+                followers: parsedTweet.followers,
+              
+                score,
+                impact_score,
+                freshness_multiplier,
+                consistency_multiplier,
+                decay_factor,
+              
+                index_in_batch: index,
+                is_first_of_week: index === 0,
+                is_second_of_week: index === 1,
+                user_was_active_last_week: true,
+              
+                
+                query_account: username 
+              });
 
               // Calculate the score using tweet metrics
               const metrics = tweet.public_metrics;
