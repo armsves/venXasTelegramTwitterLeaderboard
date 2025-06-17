@@ -3,9 +3,12 @@ import TelegramBot from 'node-telegram-bot-api'
 import { Agent } from '@openserv-labs/sdk'
 import axios from 'axios'
 import { z } from 'zod'
+import { supabase } from './supabaseClient';
 
 // Load environment variables
 dotenv.config()
+
+
 
 class SimpleTelegramBot extends Agent {
   private bot: TelegramBot
@@ -143,20 +146,38 @@ Example: /ask What is OpenServ?\
       };
     }
     
-    function scoreTweetFromParsedData(parsed: ReturnType<typeof parseTweetBlock>, index: number, wasActiveLastWeek: boolean): number {
-      const impactScore = (parsed.followers * 0.001) + parsed.likes + (parsed.retweets * 2);
+    function scoreTweetFromParsedData(parsed: ReturnType<typeof parseTweetBlock>, index: number, wasActiveLastWeek: boolean) {
+      const impact_score = (parsed.followers * 0.001) + parsed.likes + (parsed.retweets * 2);
+      const freshness_multiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
+      const decay_factor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
+      const consistency_multiplier = wasActiveLastWeek ? 1.25 : 1;
     
-      // Assign a base score if impactScore is 0
-      const baseScore = impactScore === 0 ? 1 : impactScore;
+      const score = impact_score * freshness_multiplier * consistency_multiplier * decay_factor;
     
-      const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
-      const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
-      const consistencyMultiplier = wasActiveLastWeek ? 1.25 : 1;
-    
-      const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
-    
-      return Math.round(finalScore * 100) / 100;
+      return {
+        score: Math.round(score * 100) / 100,
+        impact_score,
+        freshness_multiplier,
+        consistency_multiplier,
+        decay_factor,
+      };
     }
+    
+
+    
+    async function saveScoredTweet(tweet: ScoredTweet) {
+      const { error } = await supabase.from("tweets_scored").upsert({
+        ...tweet,
+        processed_at: tweet.processed_at || new Date().toISOString(),
+      });
+
+      if (error) {
+        console.error(`❌ Error guardando tweet ${tweet.id_tweet}:`, error);
+      } else {
+        console.log(`✅ Tweet ${tweet.id_tweet} guardado con score ${tweet.score}`);
+      }
+    }
+
 
     // Handle /tweets command
       this.bot.onText(/\/update (.+)/, async (msg, match) => {
@@ -212,8 +233,34 @@ Example: /ask What is OpenServ?\
                 const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
       
                 const parsedTweet = parseTweetBlock(tweetBlock);
-                const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
-      
+                //const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
+                //save the tweet with the score
+                const fullScore = scoreTweetFromParsedData(parsedTweet, index, true); // puedes ajustar el último param
+
+                await saveScoredTweet({
+                  id_tweet: tweet.id,
+                  user_id: tweet.author_id,
+                  username,
+                  text: tweet.text,
+                  published_at: tweet.created_at,
+                  likes: tweet.public_metrics.like_count,
+                  retweets: tweet.public_metrics.retweet_count,
+                  replies: tweet.public_metrics.reply_count,
+                  followers: parsedTweet.followers,
+
+                  score: fullScore.score,
+                  impact_score: fullScore.impact_score,
+                  freshness_multiplier: fullScore.freshness_multiplier,
+                  consistency_multiplier: fullScore.consistency_multiplier,
+                  decay_factor: fullScore.decay_factor,
+                  query_account: username,
+                  index_in_batch: index,
+                  is_first_of_week: index === 0,
+                  is_second_of_week: index === 1,
+                  
+                  user_was_active_last_week: true // puedes cambiar según lógica real
+                });
+
                 // Aggregate scores by user
                 if (!userScores[tweet.author_id]) {
                   userScores[tweet.author_id] = { username, profileLink, score: 0 };
