@@ -109,6 +109,7 @@ class SimpleTelegramBot extends Agent {
       }
     })
   }
+  
 
   private setupHandlers() {
     // Handle /start command
@@ -123,75 +124,134 @@ Example: /ask What is OpenServ?\
       )
     })
 
+  function parseTweetBlock(tweetTextBlock: string) {
+      const tweetIdMatch = tweetTextBlock.match(/Tweet ID: (\d+)/);
+      const authorMatch = tweetTextBlock.match(/Author: @(\w+).*Followers: (\d+)/);
+      const retweetsMatch = tweetTextBlock.match(/Retweets: (\d+)/);
+      const likesMatch = tweetTextBlock.match(/Likes: (\d+)/);
+      const repliesMatch = tweetTextBlock.match(/Replies: (\d+)/);
+      const textMatch = tweetTextBlock.match(/💬 Text: (.+)$/s);
+    
+      return {
+        id: tweetIdMatch?.[1] || '',
+        author: authorMatch?.[1] || '',
+        followers: parseInt(authorMatch?.[2] || '0', 10),
+        retweets: parseInt(retweetsMatch?.[1] || '0', 10),
+        likes: parseInt(likesMatch?.[1] || '0', 10),
+        replies: parseInt(repliesMatch?.[1] || '0', 10),
+        text: textMatch?.[1].trim() || '',
+      };
+    }
+    
+    function scoreTweetFromParsedData(parsed: ReturnType<typeof parseTweetBlock>, index: number, wasActiveLastWeek: boolean): number {
+      const impactScore = (parsed.followers * 0.001) + parsed.likes + (parsed.retweets * 2);
+    
+      // Assign a base score if impactScore is 0
+      const baseScore = impactScore === 0 ? 1 : impactScore;
+    
+      const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
+      const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
+      const consistencyMultiplier = wasActiveLastWeek ? 1.25 : 1;
+    
+      const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
+    
+      return Math.round(finalScore * 100) / 100;
+    }
+
     // Handle /tweets command
-    this.bot.onText(/\/update (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id;
-      const question2 = match?.[1];
-    
-      if (!question2) {
-        await this.bot.sendMessage(chatId, '❌ Please write a text: /tweets [text]');
-        return;
-      }
-      this.bot.sendChatAction(chatId, 'typing');
-    
-      try {
-        console.log(`📝 Tweet text received: \"${question2}\"`);
-    
-        // Fetch tweets
-        const result = await this.callIntegration({
-          workspaceId: 4468,
-          integrationId: 'twitter-v2',
-          details: {
-            endpoint: '/2/tweets/search/recent',
-            method: 'GET',
-            params: {
-              'query': 'OpenServ',
-              'tweet.fields': 'author_id,public_metrics,created_at' // Include created_at field
-            }
-          }
-        });
-    
-        console.log(`🚀 Task created with result: ${JSON.stringify(result)}`);
-    
-        if (result && typeof result === 'object' && result.output?.data?.length > 0) {
-          const tweets = await Promise.all(
-            result.output.data.map(async (tweet: any) => {
-              // Fetch user details for each author
-              const userDetails = await this.callIntegration({
-                workspaceId: 4468,
-                integrationId: 'twitter-v2',
-                details: {
-                  endpoint: `/2/users/${tweet.author_id}`,
-                  method: 'GET',
-                  params: {
-                    'user.fields': 'username,public_metrics'
-                  }
-                }
-              });
-
-              const username = userDetails.output.data.username;
-              const followersCount = userDetails.output.data.public_metrics.followers_count;
-
-              return `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id} (Followers: ${followersCount})\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
-            })
-          );
-
-          const formattedTweets = tweets.join('\n---\n'); // Separate tweets with a divider
-
-          // Split the message into chunks of 4096 characters
-          const chunks = formattedTweets.match(/[\s\S]{1,4096}/g) || [];
-
-          for (const chunk of chunks) {
-            await this.bot.sendMessage(chatId, chunk);
-          }
-        } else {
-          await this.bot.sendMessage(chatId, '❌ Sorry, I could not retrieve any tweets. Please try again.');
+      this.bot.onText(/\/update (.+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const question2 = match?.[1];
+      
+        if (!question2) {
+          await this.bot.sendMessage(chatId, '❌ Please write a text: /tweets [text]');
+          return;
         }
-      } catch (error) {
-        console.error('Error processing question:', error);
-        await this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
-      }
-    });
+        this.bot.sendChatAction(chatId, 'typing');
+      
+        try {
+          console.log(`📝 Tweet text received: \"${question2}\"`);
+      
+          // Fetch tweets
+          const result = await this.callIntegration({
+            workspaceId: 4468,
+            integrationId: 'twitter-v2',
+            details: {
+              endpoint: '/2/tweets/search/recent',
+              method: 'GET',
+              params: {
+                'query': 'OpenServ',
+                'tweet.fields': 'author_id,public_metrics,created_at' // Include created_at field
+              }
+            }
+          });
+      
+          console.log(`🚀 Task created with result: ${JSON.stringify(result)}`);
+      
+          if (result && typeof result === 'object' && result.output?.data?.length > 0) {
+            const userScores: Record<string, { username: string; profileLink: string; score: number }> = {};
+      
+            await Promise.all(
+              result.output.data.map(async (tweet: any, index: number) => {
+                // Fetch user details for each author
+                const userDetails = await this.callIntegration({
+                  workspaceId: 4468,
+                  integrationId: 'twitter-v2',
+                  details: {
+                    endpoint: `/2/users/${tweet.author_id}`,
+                    method: 'GET',
+                    params: {
+                      'user.fields': 'username'
+                    }
+                  }
+                });
+      
+                const username = userDetails.output.data.username;
+                const profileLink = `https://twitter.com/${username}`;
+      
+                const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
+      
+                const parsedTweet = parseTweetBlock(tweetBlock);
+                const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
+      
+                // Aggregate scores by user
+                if (!userScores[tweet.author_id]) {
+                  userScores[tweet.author_id] = { username, profileLink, score: 0 };
+                }
+                userScores[tweet.author_id].score += score;
+              })
+            );
+      
+            // Sort users by score and take the top 10
+            const leaderboard = Object.values(userScores)
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 10);
+      
+            const leaderboardText = leaderboard
+              .map((user, rank) => {
+                let rankIcon = '🏆'; 
+                if (rank === 0) rankIcon = '🥇'; 
+                else if (rank === 1) rankIcon = '🥈';
+                else if (rank === 2) rankIcon = '🥉'; 
+                else rankIcon = `${rank + 1}️⃣`;
+            
+                // Add a leading space for scores less than 10
+                const formattedScore = user.score < 10 ? `  ${user.score.toFixed(2)}` : user.score.toFixed(2);
+            
+                return `${rankIcon} ⭐ ${formattedScore} 👤 <a href="${user.profileLink}">@${user.username}</a>`;
+              })
+              .join('\n');
+            
+            await this.bot.sendMessage(chatId, leaderboardText, { parse_mode: 'HTML', disable_web_page_preview: true });
+
+          } else {
+            await this.bot.sendMessage(chatId, '❌ Sorry, I could not retrieve any tweets. Please try again.');
+          }
+        } catch (error) {
+          console.error('Error processing question:', error);
+          await this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
+        }
+      });
 
     // Handle /ask command
     this.bot.onText(/\/ask (.+)/, async (msg, match) => {
