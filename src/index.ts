@@ -33,105 +33,30 @@ class SimpleTelegramBot extends Agent {
     this.workspaceId = parseInt(process.env.WORKSPACE_ID!)
     this.agentId = parseInt(process.env.AGENT_ID!)
 
-    // Add debug capability to discover available agents
-    this.addDebugCapability()
-    //this.addTwitterCapability()
-    this.addGetTwitterPostsCapability()
-
     this.setupHandlers()
   }
-
-  private addTwitterCapability() {
-    this.addCapability({
-      name: 'getTwitterAccount',
-      description: 'Gets the Twitter account for the current user',
-      schema: z.object({}),
-      async run({ action }) {
-        const details = await this.callIntegration({
-          workspaceId: action!.workspace.id,
-          integrationId: 'twitter-v2',
-          details: {
-            endpoint: '/2/users/me',
-            method: 'GET'
-          }
-        })
-
-        return details.output.data.username
-      }
-    })
-  }
-
-  private addGetTwitterPostsCapability() {
-    this.addCapability({
-      name: 'getTwitterPosts',
-      description: 'Gets the 10 latests Tweets',
-      schema: z.object({}),
-      async run({ action }) {
-        const details = await this.callIntegration({
-          workspaceId: action!.workspace.id,
-          integrationId: 'twitter-v2',
-          details: {
-            endpoint: '/2/tweets/search/recent',
-            method: 'GET',
-            params: {
-              'query': 'OpenServ',
-              'tweet.fields': 'author_id,public_metrics'
-            }
-          }
-        })
-
-        return details.output.data.username
-      }
-    })
-  }
-
-
-  private addDebugCapability() {
-    // Add this temporary capability to see available agents
-    this.addCapability({
-      name: 'debugAgents',
-      description: 'Debug: log all available agents',
-      schema: z.object({}),
-      async run({ args, action }) {
-        if (!action?.workspace?.agents) {
-          console.log('❌ No workspace agents available')
-          return 'No workspace context available'
-        }
-
-        console.log('🔍 Available Agents in Workspace:')
-        action.workspace.agents.forEach((agent, index) => {
-          console.log(`${index + 1}. Name: \"${agent.name}\" | ID: ${agent.id}`)
-          console.log(`   Capabilities: ${agent.capabilities_description}`)
-          console.log('---')
-        })
-
-        return `Found ${action.workspace.agents.length} agents. Check console for details.`
-      }
-    })
-  }
-  
 
   private setupHandlers() {
     // Handle /start command
     this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id
       await this.bot.sendMessage(chatId,
-        '🤖 VenXas OpenServ Twitter/X Leaderboard Bot!\
+        '🤖 VenXas OpenServ Twitter/X Leaderboard Bot!\n\
 \
-Usage: /ask [your question]\
-Example: /ask What is OpenServ?\
-/tweets [text]'
+Usage: /leaderboard [project handle]\n\
+Example: /leaderboard OpenServ\
+'
       )
     })
 
-  function parseTweetBlock(tweetTextBlock: string) {
+    function parseTweetBlock(tweetTextBlock: string) {
       const tweetIdMatch = tweetTextBlock.match(/Tweet ID: (\d+)/);
       const authorMatch = tweetTextBlock.match(/Author: @(\w+).*Followers: (\d+)/);
       const retweetsMatch = tweetTextBlock.match(/Retweets: (\d+)/);
       const likesMatch = tweetTextBlock.match(/Likes: (\d+)/);
       const repliesMatch = tweetTextBlock.match(/Replies: (\d+)/);
       const textMatch = tweetTextBlock.match(/💬 Text: (.+)$/s);
-    
+
       return {
         id: tweetIdMatch?.[1] || '',
         author: authorMatch?.[1] || '',
@@ -142,37 +67,42 @@ Example: /ask What is OpenServ?\
         text: textMatch?.[1].trim() || '',
       };
     }
-    
+
     function scoreTweetFromParsedData(parsed: ReturnType<typeof parseTweetBlock>, index: number, wasActiveLastWeek: boolean): number {
       const impactScore = (parsed.followers * 0.001) + parsed.likes + (parsed.retweets * 2);
-    
+
       // Assign a base score if impactScore is 0
       const baseScore = impactScore === 0 ? 1 : impactScore;
-    
+
       const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
       const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
       const consistencyMultiplier = wasActiveLastWeek ? 1.25 : 1;
-    
+
       const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
-    
+
       return Math.round(finalScore * 100) / 100;
     }
 
     // Handle /tweets command
-      this.bot.onText(/\/update (.+)/, async (msg, match) => {
-        const chatId = msg.chat.id;
-        const question2 = match?.[1];
-      
-        if (!question2) {
-          await this.bot.sendMessage(chatId, '❌ Please write a text: /tweets [text]');
-          return;
-        }
-        this.bot.sendChatAction(chatId, 'typing');
-      
-        try {
-          console.log(`📝 Tweet text received: \"${question2}\"`);
-      
-          // Fetch tweets
+    this.bot.onText(/\/leaderboard (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id
+      const question = match?.[1]
+
+      if (!question) {
+        await this.bot.sendMessage(chatId, '❌ Please write a project to show the leaderboard: /leaderboard [your project]')
+        return
+      }
+
+      this.bot.sendChatAction(chatId, 'typing');
+
+      try {
+        console.log(`📝 Fetching tweets...`);
+
+        const allTweets: any[] = [];
+        let nextToken: string | undefined = undefined;
+
+        // Fetch up to 10 pages of tweets
+        for (let page = 0; page < 10; page++) {
           const result = await this.callIntegration({
             workspaceId: 4468,
             integrationId: 'twitter-v2',
@@ -180,124 +110,98 @@ Example: /ask What is OpenServ?\
               endpoint: '/2/tweets/search/recent',
               method: 'GET',
               params: {
-                'query': 'OpenServ',
-                'tweet.fields': 'author_id,public_metrics,created_at' // Include created_at field
+                'query': question,
+                'tweet.fields': 'author_id,public_metrics,created_at',
+                'max_results': 10,
+                ...(nextToken ? { 'next_token': nextToken } : {})
               }
             }
           });
-      
-          console.log(`🚀 Task created with result: ${JSON.stringify(result)}`);
-      
+
+          console.log(`🚀 Page ${page + 1} fetched with result: ${JSON.stringify(result)}`);
+
           if (result && typeof result === 'object' && result.output?.data?.length > 0) {
-            const userScores: Record<string, { username: string; profileLink: string; score: number }> = {};
-      
-            await Promise.all(
-              result.output.data.map(async (tweet: any, index: number) => {
-                // Fetch user details for each author
-                const userDetails = await this.callIntegration({
-                  workspaceId: 4468,
-                  integrationId: 'twitter-v2',
-                  details: {
-                    endpoint: `/2/users/${tweet.author_id}`,
-                    method: 'GET',
-                    params: {
-                      'user.fields': 'username'
-                    }
-                  }
-                });
-      
-                const username = userDetails.output.data.username;
-                const profileLink = `https://twitter.com/${username}`;
-      
-                const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
-      
-                const parsedTweet = parseTweetBlock(tweetBlock);
-                const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
-      
-                // Aggregate scores by user
-                if (!userScores[tweet.author_id]) {
-                  userScores[tweet.author_id] = { username, profileLink, score: 0 };
-                }
-                userScores[tweet.author_id].score += score;
-              })
-            );
-      
-            // Sort users by score and take the top 10
-            const leaderboard = Object.values(userScores)
-              .sort((a, b) => b.score - a.score)
-              .slice(0, 10);
-      
-            const leaderboardText = leaderboard
-              .map((user, rank) => {
-                let rankIcon = '🏆'; 
-                if (rank === 0) rankIcon = '🥇'; 
-                else if (rank === 1) rankIcon = '🥈';
-                else if (rank === 2) rankIcon = '🥉'; 
-                else rankIcon = `${rank + 1}️⃣`;
-            
-                // Add a leading space for scores less than 10
-                const formattedScore = user.score < 10 ? `  ${user.score.toFixed(2)}` : user.score.toFixed(2);
-            
-                return `${rankIcon} ⭐ ${formattedScore} 👤 <a href="${user.profileLink}">@${user.username}</a>`;
-              })
-              .join('\n');
-            
-            await this.bot.sendMessage(chatId, leaderboardText, { parse_mode: 'HTML', disable_web_page_preview: true });
+            allTweets.push(...result.output.data);
+            nextToken = result.output.meta?.next_token;
 
+            if (!nextToken) break;
           } else {
-            await this.bot.sendMessage(chatId, '❌ Sorry, I could not retrieve any tweets. Please try again.');
+            console.log(`❌ No more tweets found.`);
+            break;
           }
-        } catch (error) {
-          console.error('Error processing question:', error);
-          await this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
         }
-      });
 
-    // Handle /ask command
-    this.bot.onText(/\/ask (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id
-      const question = match?.[1]
+        console.log(`✅ Fetched ${allTweets.length} tweets in total.`);
 
-      if (!question) {
-        await this.bot.sendMessage(chatId, '❌ Please write a question: /ask [your question]')
-        return
-      }
+        if (allTweets.length > 0) {
+          const userScores: Record<string, { username: string; profileLink: string; score: number }> = {};
 
-      // Send typing indicator
-      this.bot.sendChatAction(chatId, 'typing')
+          await Promise.all(
+            allTweets.map(async (tweet: any, index: number) => {
+              // Fetch user details for each author
+              const userDetails = await this.callIntegration({
+                workspaceId: 4468,
+                integrationId: 'twitter-v2',
+                details: {
+                  endpoint: `/2/users/${tweet.author_id}`,
+                  method: 'GET',
+                  params: {
+                    'user.fields': 'username'
+                  }
+                }
+              });
 
-      try {
-        console.log(`📝 Question received: \"${question}\"`)
+              const username = userDetails.output.data.username;
+              const profileLink = `https://twitter.com/${username}`;
 
-        // Create task for the agent
-        const task = await this.createTask({
-          workspaceId: this.workspaceId,
-          assignee: this.agentId,
-          description: 'Answer user question',
-          body: `User asked: \"${question}\"\
-\
-Please provide a helpful and accurate answer.`,
-          input: question,
-          expectedOutput: 'A clear and helpful answer to the user question',
-          dependencies: []
-        })
+              const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
 
-        console.log(`🚀 Task created with ID: ${task.id}`)
+              const parsedTweet = parseTweetBlock(tweetBlock);
+              const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
 
-        // Wait for task completion
-        const result = await this.waitForTaskCompletion(task.id, chatId)
+              // Aggregate scores by user
+              if (!userScores[tweet.author_id]) {
+                userScores[tweet.author_id] = { username, profileLink, score: 0 };
+              }
+              userScores[tweet.author_id].score += score;
+            })
+          );
 
-        if (result) {
-          await this.bot.sendMessage(chatId, result)
+          // Sort users by score and take the top 10
+          const leaderboard = Object.values(userScores)
+            .filter(user => user.username !== 'openservai') // Exclude 'openservai'
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
+          
+          const leaderboardHeader = `<b>Leaderboard for "${question}"</b>\n\n`;
+          
+          const leaderboardText = leaderboard
+            .map((user, rank) => {
+              let rankIcon = '🏆'; // Default trophy icon
+              if (rank === 0) rankIcon = '🥇'; // Gold medal for 1st place
+              else if (rank === 1) rankIcon = '🥈'; // Silver medal for 2nd place
+              else if (rank === 2) rankIcon = '🥉'; // Bronze medal for 3rd place
+              else if (rank === 9) rankIcon = '🔟'; // Special icon for rank 10
+              else rankIcon = `${rank + 1}️⃣`; // Numbered icon for ranks 4th to 9th
+          
+              // Add consistent spacing for scores
+              let formattedScore = user.score.toFixed(2);
+              if (user.score < 10) formattedScore = `   ${formattedScore}`; // Add extra spaces for scores < 10
+              else if (user.score < 100) formattedScore = `  ${formattedScore}`; // Add extra spaces for scores < 100
+          
+              return `${rankIcon} ⭐ ${formattedScore} 👤 <a href="${user.profileLink}">@${user.username}</a>`;
+            })
+            .join('\n'); // Add line breaks between entries
+          
+          await this.bot.sendMessage(chatId, leaderboardHeader + leaderboardText, { parse_mode: 'HTML', disable_web_page_preview: true });
         } else {
-          await this.bot.sendMessage(chatId, '❌ Sorry, I could not answer your question. Please try again.')
+          await this.bot.sendMessage(chatId, '❌ Sorry, I could not retrieve any tweets. Please try again.');
         }
-
       } catch (error) {
-        console.error('Error processing question:', error)
-        await this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.')
+        console.error('Error processing question:', error);
+        await this.bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
       }
-    })
+    });
 
     // Handle /help command
     this.bot.onText(/\/help/, async (msg) => {
@@ -397,13 +301,9 @@ Example:
 
   public async start(): Promise<void> {
     try {
-      console.log('🚀 Starting Simple OpenServ Telegram Bot...')
-
-      // Start the OpenServ agent server
+      console.log('🚀 Starting Twitter LeaderBoard Telegram Bot...')
       await super.start()
-
       console.log('✅ Bot is running! Send /start to begin.')
-
       // Handle graceful shutdown
       process.on('SIGINT', () => {
         console.log('\
