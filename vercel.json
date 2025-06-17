@@ -1,0 +1,14 @@
+{
+  "build": {
+    "env": {
+      "TELEGRAM_BOT_TOKEN": "@telegram_bot_token",
+      "OPENSERV_API_KEY": "@openserv_api_key",
+      "WORKSPACE_ID": "@workspace_id",
+      "AGENT_ID": "@agent_id"
+    },
+    "commands": {
+      "build": "npm run build"
+    },
+    "outputDirectory": "dist"
+  }
+}

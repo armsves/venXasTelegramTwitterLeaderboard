@@ -24,7 +24,7 @@ class SimpleTelegramBot extends Agent {
 
     // Initialize Agent (parent class)
     super({
-      systemPrompt: 'You are a helpful assistant.',
+      systemPrompt: 'You are a twitter leaderboard generator for telegram.',
       apiKey: process.env.OPENSERV_API_KEY!
     })
 
@@ -49,48 +49,13 @@ Example: /leaderboard OpenServ\
       )
     })
 
-    function parseTweetBlock(tweetTextBlock: string) {
-      const tweetIdMatch = tweetTextBlock.match(/Tweet ID: (\d+)/);
-      const authorMatch = tweetTextBlock.match(/Author: @(\w+).*Followers: (\d+)/);
-      const retweetsMatch = tweetTextBlock.match(/Retweets: (\d+)/);
-      const likesMatch = tweetTextBlock.match(/Likes: (\d+)/);
-      const repliesMatch = tweetTextBlock.match(/Replies: (\d+)/);
-      const textMatch = tweetTextBlock.match(/💬 Text: (.+)$/s);
-
-      return {
-        id: tweetIdMatch?.[1] || '',
-        author: authorMatch?.[1] || '',
-        followers: parseInt(authorMatch?.[2] || '0', 10),
-        retweets: parseInt(retweetsMatch?.[1] || '0', 10),
-        likes: parseInt(likesMatch?.[1] || '0', 10),
-        replies: parseInt(repliesMatch?.[1] || '0', 10),
-        text: textMatch?.[1].trim() || '',
-      };
-    }
-
-    function scoreTweetFromParsedData(parsed: ReturnType<typeof parseTweetBlock>, index: number, wasActiveLastWeek: boolean): number {
-      const impactScore = (parsed.followers * 0.001) + parsed.likes + (parsed.retweets * 2);
-
-      // Assign a base score if impactScore is 0
-      const baseScore = impactScore === 0 ? 1 : impactScore;
-
-      const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
-      const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
-      const consistencyMultiplier = wasActiveLastWeek ? 1.25 : 1;
-
-      const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
-
-      return Math.round(finalScore * 100) / 100;
-    }
-
-    // Handle /tweets command
-    this.bot.onText(/\/leaderboard (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id
-      const question = match?.[1]
+    this.bot.onText(/\/leaderboard(?:\s+(.+))?/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const question = match?.[1];
 
       if (!question) {
-        await this.bot.sendMessage(chatId, '❌ Please write a project to show the leaderboard: /leaderboard [your project]')
-        return
+        await this.bot.sendMessage(chatId, '❌ Please write a project to show the leaderboard: /leaderboard [your project]');
+        return;
       }
 
       this.bot.sendChatAction(chatId, 'typing');
@@ -146,24 +111,29 @@ Example: /leaderboard OpenServ\
                   endpoint: `/2/users/${tweet.author_id}`,
                   method: 'GET',
                   params: {
-                    'user.fields': 'username'
+                    'user.fields': 'username,public_metrics'
                   }
                 }
               });
 
               const username = userDetails.output.data.username;
+              const followersCount = userDetails.output.data.public_metrics?.followers_count || 0;
               const profileLink = `https://twitter.com/${username}`;
 
-              const tweetBlock = `📝 Tweet ID: ${tweet.id}\n👤 Author: @${username} \n User ID: ${tweet.author_id}\n📅 Published: ${tweet.created_at}\n📊 Metrics: Retweets: ${tweet.public_metrics.retweet_count}, Likes: ${tweet.public_metrics.like_count}, Replies: ${tweet.public_metrics.reply_count}\n💬 Text: ${tweet.text}\n`;
-
-              const parsedTweet = parseTweetBlock(tweetBlock);
-              const score = scoreTweetFromParsedData(parsedTweet, index, true); // Assume active last week for now
+              // Calculate the score using tweet metrics
+              const metrics = tweet.public_metrics;
+              const impactScore = (followersCount * 0.001) + metrics.like_count + (metrics.retweet_count * 2);
+              const baseScore = impactScore === 0 ? 1 : impactScore;
+              const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
+              const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
+              const consistencyMultiplier = true ? 1.25 : 1; // Assume active last week for now
+              const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
 
               // Aggregate scores by user
               if (!userScores[tweet.author_id]) {
                 userScores[tweet.author_id] = { username, profileLink, score: 0 };
               }
-              userScores[tweet.author_id].score += score;
+              userScores[tweet.author_id].score += Math.round(finalScore * 100) / 100;
             })
           );
 
@@ -172,9 +142,9 @@ Example: /leaderboard OpenServ\
             .filter(user => user.username !== 'openservai') // Exclude 'openservai'
             .sort((a, b) => b.score - a.score)
             .slice(0, 10);
-          
+
           const leaderboardHeader = `<b>Leaderboard for "${question}"</b>\n\n`;
-          
+
           const leaderboardText = leaderboard
             .map((user, rank) => {
               let rankIcon = '🏆'; // Default trophy icon
@@ -183,16 +153,16 @@ Example: /leaderboard OpenServ\
               else if (rank === 2) rankIcon = '🥉'; // Bronze medal for 3rd place
               else if (rank === 9) rankIcon = '🔟'; // Special icon for rank 10
               else rankIcon = `${rank + 1}️⃣`; // Numbered icon for ranks 4th to 9th
-          
+
               // Add consistent spacing for scores
               let formattedScore = user.score.toFixed(2);
               if (user.score < 10) formattedScore = `   ${formattedScore}`; // Add extra spaces for scores < 10
               else if (user.score < 100) formattedScore = `  ${formattedScore}`; // Add extra spaces for scores < 100
-          
+
               return `${rankIcon} ⭐ ${formattedScore} 👤 <a href="${user.profileLink}">@${user.username}</a>`;
             })
             .join('\n'); // Add line breaks between entries
-          
+
           await this.bot.sendMessage(chatId, leaderboardHeader + leaderboardText, { parse_mode: 'HTML', disable_web_page_preview: true });
         } else {
           await this.bot.sendMessage(chatId, '❌ Sorry, I could not retrieve any tweets. Please try again.');
