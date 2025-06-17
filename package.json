@@ -1,7 +1,7 @@
 {
   "name": "simple-telegram-openserv-bot",
   "version": "1.0.0",
-  "description": "Simple Telegram bot using OpenServ SDK",
+  "description": "Twitter leaderboard generator for telegram",
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
