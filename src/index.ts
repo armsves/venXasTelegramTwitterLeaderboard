@@ -103,43 +103,53 @@ Example: /leaderboard OpenServ\
 
           await Promise.all(
             allTweets.map(async (tweet: any, index: number) => {
-              // Fetch user details for each author
-              const userDetails = await this.callIntegration({
-                workspaceId: 4468,
-                integrationId: 'twitter-v2',
-                details: {
-                  endpoint: `/2/users/${tweet.author_id}`,
-                  method: 'GET',
-                  params: {
-                    'user.fields': 'username,public_metrics'
+              try {
+                // Fetch user details for each author
+                const userDetails = await this.callIntegration({
+                  workspaceId: 4468,
+                  integrationId: 'twitter-v2',
+                  details: {
+                    endpoint: `/2/users/${tweet.author_id}`,
+                    method: 'GET',
+                    params: {
+                      'user.fields': 'username,public_metrics'
+                    }
                   }
+                });
+          
+                // Validate the response structure
+                if (!userDetails || !userDetails.output || !userDetails.output.data || !userDetails.output.data.username) {
+                  console.error(`❌ Missing user details for author_id: ${tweet.author_id}`);
+                  return;
                 }
-              });
-
-              const username = userDetails.output.data.username;
-              const followersCount = userDetails.output.data.public_metrics?.followers_count || 0;
-              const profileLink = `https://twitter.com/${username}`;
-
-              // Calculate the score using tweet metrics
-              const metrics = tweet.public_metrics;
-              const impactScore = (followersCount * 0.001) + metrics.like_count + (metrics.retweet_count * 2);
-              const baseScore = impactScore === 0 ? 1 : impactScore;
-              const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
-              const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
-              const consistencyMultiplier = true ? 1.25 : 1; // Assume active last week for now
-              const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
-
-              // Aggregate scores by user
-              if (!userScores[tweet.author_id]) {
-                userScores[tweet.author_id] = { username, profileLink, score: 0 };
+          
+                const username = userDetails.output.data.username;
+                const followersCount = userDetails.output.data.public_metrics?.followers_count || 0;
+                const profileLink = `https://twitter.com/${username}`;
+          
+                // Calculate the score using tweet metrics
+                const metrics = tweet.public_metrics;
+                const impactScore = (followersCount * 0.001) + metrics.like_count + (metrics.retweet_count * 2);
+                const baseScore = impactScore === 0 ? 1 : impactScore;
+                const freshnessMultiplier = index === 0 ? 3 : index === 1 ? 2 : 1;
+                const decayFactor = index === 0 ? 1 : index === 1 ? 0.5 : 0.25;
+                const consistencyMultiplier = true ? 1.25 : 1; // Assume active last week for now
+                const finalScore = baseScore * freshnessMultiplier * consistencyMultiplier * decayFactor;
+          
+                // Aggregate scores by user
+                if (!userScores[tweet.author_id]) {
+                  userScores[tweet.author_id] = { username, profileLink, score: 0 };
+                }
+                userScores[tweet.author_id].score += Math.round(finalScore * 100) / 100;
+              } catch (error) {
+                console.error(`❌ Error fetching user details for author_id: ${tweet.author_id}`, error);
               }
-              userScores[tweet.author_id].score += Math.round(finalScore * 100) / 100;
             })
           );
 
           // Sort users by score and take the top 10
           const leaderboard = Object.values(userScores)
-            .filter(user => user.username !== 'openservai') // Exclude 'openservai'
+            .filter(user => user.username !== 'openservai')
             .sort((a, b) => b.score - a.score)
             .slice(0, 10);
 
@@ -147,17 +157,16 @@ Example: /leaderboard OpenServ\
 
           const leaderboardText = leaderboard
             .map((user, rank) => {
-              let rankIcon = '🏆'; // Default trophy icon
-              if (rank === 0) rankIcon = '🥇'; // Gold medal for 1st place
-              else if (rank === 1) rankIcon = '🥈'; // Silver medal for 2nd place
-              else if (rank === 2) rankIcon = '🥉'; // Bronze medal for 3rd place
-              else if (rank === 9) rankIcon = '🔟'; // Special icon for rank 10
-              else rankIcon = `${rank + 1}️⃣`; // Numbered icon for ranks 4th to 9th
+              let rankIcon;
+              if (rank === 0) rankIcon = '🥇';
+              else if (rank === 1) rankIcon = '🥈';
+              else if (rank === 2) rankIcon = '🥉';
+              else if (rank === 9) rankIcon = '🔟';
+              else rankIcon = `${rank + 1}️⃣`;
 
-              // Add consistent spacing for scores
               let formattedScore = user.score.toFixed(2);
-              if (user.score < 10) formattedScore = `   ${formattedScore}`; // Add extra spaces for scores < 10
-              else if (user.score < 100) formattedScore = `  ${formattedScore}`; // Add extra spaces for scores < 100
+              if (user.score < 10) formattedScore = `   ${formattedScore}`;
+              else if (user.score < 100) formattedScore = `  ${formattedScore}`;
 
               return `${rankIcon} ⭐ ${formattedScore} 👤 <a href="${user.profileLink}">@${user.username}</a>`;
             })
